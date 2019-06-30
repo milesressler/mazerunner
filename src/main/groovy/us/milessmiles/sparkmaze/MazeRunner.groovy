@@ -7,25 +7,33 @@ import static us.milessmiles.sparkmaze.Feature.*
  *
  * Solves a maze by getting shortest route with no more than 2 mine explosions
  *
- * Assumes all data in txt is in correct format, and provided size matches the list length, and maze is square
+ * Assumes all data in txt is in correct format, provided size matches the list length, maze is square with all sides present, and there is a solution
  *
  * I chose to use the A* algorithm as a starting point because it is the industry standard for maze solving for imperfect mazes.
- * The basic approach is to use a depth-first search, get the best paths that allow for 0, 1, and 2 mines, and pass that back up the stack
+ * The algorithm runs on maze, then increases the cost of a mine until a solution where numberOfMines is less than the number of lives
  */
 class MazeRunner {
+    // Configuration
+    Integer numberOfLives
 
+    // Runtime parameter
+    Integer mineCost = 0
+
+    // Data stores
     Integer[][] maze
     Coordinate start
     Coordinate end
-    Integer numberOfLives
+
+    PriorityQueue<Coordinate> coordinatePriorityQueue
+    Set<Coordinate> solvedCoordinates = []
 
     static void main(String[] args) {
-        // TODO consider threading for performance
-        // TODO allow user to pass in file location and thread max
+        // TODO consider threading for performance improvements?
+        // TODO allow user to pass in file location, thread max, number of lives
 
         def fileLocation = null
         def numberOfLives = 3
-        def mazeFile = fileLocation ? new File(fileLocation) : new File(getClass().getResource('/mazes.txt').toURI())
+        def mazeFile = fileLocation ? new File(fileLocation) : new File(getClass().getResource('/mazes-tests.txt').toURI())
 
         mazeFile.eachLine { content, lineNumber ->
             def mazeRunner = new MazeRunner(content, numberOfLives)
@@ -33,10 +41,9 @@ class MazeRunner {
             println "\nDrawing Maze #${lineNumber}"
             mazeRunner.draw()
 
-            print "Solving..."
-            def solution = mazeRunner.solve(mazeRunner.start, null)
+            println "Solving..."
+            def solution = mazeRunner.solve()
             def solutionString = solution.collect { it.name().toLowerCase()  }.join("','")
-            println "Complete"
             println ("['" + solutionString + "']")
         }
 
@@ -46,6 +53,11 @@ class MazeRunner {
     MazeRunner(String mazeString, Integer numberOfLives) {
         this.buildMaze(mazeString)
         this.numberOfLives = numberOfLives
+        coordinatePriorityQueue = new PriorityQueue<Coordinate>( { Coordinate o1, Coordinate o2 ->
+            int estimatedCost1 = o1.directionsFromStart.size() + o1.manhattanDistanceToEnd(end) + ((o1.value & MINE.val) ? mineCost : 0)
+            int estimatedCost2 = o2.directionsFromStart.size() + o2.manhattanDistanceToEnd(end) + ((o2.value & MINE.val) ? mineCost : 0)
+            return estimatedCost1 < estimatedCost2 ? -1 : estimatedCost1 > estimatedCost2 ? 1 : 0
+        })
     }
 
     void buildMaze(String mazeString) {
@@ -66,27 +78,62 @@ class MazeRunner {
                     def entry = entryString.toInteger()
                     maze[row][col] = entry
                     if (entry & START.val) {
-                        start = new Coordinate(row: row, col: col)
+                        start = new Coordinate(row: row, col: col, value: entry)
                     } else if (entry & END.val) {
-                        end = new Coordinate(row: row, col: col)
+                        end = new Coordinate(row: row, col: col, value: entry)
                     }
                 }
     }
 
+    List<Feature> solve() {
+        while (true) {
+            coordinatePriorityQueue.clear()
+            solvedCoordinates.clear()
+            coordinatePriorityQueue.add(start)
 
+            def result = executeSearch()
+            if (result.mineCount >= numberOfLives) {
+                mineCost += 1
+            } else {
+                println("Solution found with ${result.mineCount} mines, length is ${result.directionsFromStart.size()}")
+                println("Checked ${solvedCoordinates.size()}/${maze.length * maze[0].length} cells")
+                return result.directionsFromStart
+            }
+        }
+    }
 
-    List<Feature> solve(Coordinate from, Feature enteredFrom) {
-        def value = maze[from.row][from.col]
+    private Coordinate executeSearch() {
+        while (true) {
+            def next = coordinatePriorityQueue.poll()
+            def result = solveCoordinate(next)
+            if (result != null) {
+                return result
+            }
+        }
+    }
 
-        Set<Feature> openDirections = directionOptions().findAll { (value & it.val) }
-        if (enteredFrom) {
-            openDirections.remove(enteredFrom)
+    Coordinate solveCoordinate(Coordinate coordinate) {
+        if (coordinate == end) {
+            return coordinate
+        } else if (coordinate.value & MINE.val) {
+            coordinate.mineCount += 1
         }
 
-        List<Coordinate> coordinates = openDirections.collect { it.moveCoordinate(from) }
-        coordinates.sort { -1 * it.manhattanDistanceTo(end) }
+        Set<Feature> openDirections = directionOptions().findAll { (coordinate.value & it.val) }
+        openDirections.each {
+            def newCoordinate = it.moveCoordinate(coordinate)
+            newCoordinate.value = maze[newCoordinate.row][newCoordinate.col]
+            newCoordinate.mineCount = coordinate.mineCount
 
-        return [UP, DOWN]
+            if (!solvedCoordinates.contains(newCoordinate)) {
+                newCoordinate.directionsFromStart = coordinate.directionsFromStart.collect()
+                newCoordinate.directionsFromStart.add(it)
+                coordinatePriorityQueue.add(newCoordinate)
+            }
+        }
+
+        solvedCoordinates.add(coordinate)
+        return null
     }
 
 
