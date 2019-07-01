@@ -1,18 +1,22 @@
 package us.milessmiles.sparkmaze
 
+import static us.milessmiles.sparkmaze.Feature.MINE
+
 class Coordinate {
     int row
     int col
     int value
-    private Integer manhattanDistanceToEnd
+    int manhattanDistanceToEnd
     int mineCount = 0
 
-
     List<Feature> directionsFromStart = []
-    Map<Integer, List<Feature>> eligiblePathsFromEnd = null
 
-    def manhattanDistanceToEnd(Coordinate end) {
-        return manhattanDistanceToEnd ?: Math.abs(row - end.row) + Math.abs(col - end.col)
+    def manhattanDistance(Coordinate coord) {
+        return Math.abs(row - coord.row) + Math.abs(col - coord.col)
+    }
+
+    def getCost(long mineAversionFactor) {
+        return directionsFromStart.size() + manhattanDistanceToEnd + ((value & MINE.val) ? mineAversionFactor : 0)
     }
 
     boolean equals(o) {
@@ -36,7 +40,7 @@ class Coordinate {
 
 
     @Override
-    public String toString() {
+    String toString() {
         return "Coordinate{" +
                 "row=" + row +
                 ", col=" + col +

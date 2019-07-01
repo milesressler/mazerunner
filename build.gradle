@@ -1,5 +1,7 @@
 plugins {
     id 'groovy'
+    id 'application'
+    id 'com.github.johnrengelman.shadow' version '5.0.0'
 }
 
 version '1.0'
@@ -8,7 +10,6 @@ repositories {
     mavenCentral()
 }
 
-apply plugin: 'application'
 mainClassName = "us.milessmiles.sparkmaze.MazeRunner"
 
 dependencies {

@@ -10,57 +10,60 @@ import static us.milessmiles.sparkmaze.Feature.*
  * Assumes all data in txt is in correct format, provided size matches the list length, maze is square with all sides present, and there is a solution
  *
  * I chose to use the A* algorithm as a starting point because it is the industry standard for maze solving for imperfect mazes.
- * The algorithm runs on maze, then increases the cost of a mine until a solution where numberOfMines is less than the number of lives
+ * The algorithm runs on maze, then increases the cost of exploding a mine until a solution where numberOfMines crossed is less than the number of lives
  */
 class MazeRunner {
     // Configuration
-    Integer numberOfLives
-
-    // Runtime parameter
-    Integer mineCost = 0
+    static Map<String, String> parsedArgs = [:]
+    static boolean LOG_ENABLED
 
     // Data stores
     Integer[][] maze
     Coordinate start
     Coordinate end
+    Long mineAversionFactor = 0
+    Integer numberOfLives
 
     PriorityQueue<Coordinate> coordinatePriorityQueue
     Set<Coordinate> solvedCoordinates = []
 
     static void main(String[] args) {
         // TODO consider threading for performance improvements?
-        // TODO allow user to pass in file location, thread max, number of lives
 
-        def fileLocation = null
-        def numberOfLives = 3
-        def mazeFile = fileLocation ? new File(fileLocation) : new File(getClass().getResource('/mazes-tests.txt').toURI())
+        // Parse out the arguments passed in
+        args.each {
+            def arg = it.split("=")
+            parsedArgs[arg[0]] = arg[1]
+        }
 
+        Integer numberOfLives = parsedArgs['lives']?.toInteger() ?: 3
+        LOG_ENABLED = Boolean.valueOf(parsedArgs['log'])
+        def mazeFile = parsedArgs['file'] ? new File(parsedArgs['file']) : new File(getClass().getResource('/mazes.txt').toURI())
+
+        // Solve each maze (they are one per line in file)
         mazeFile.eachLine { content, lineNumber ->
             def mazeRunner = new MazeRunner(content, numberOfLives)
 
-            println "\nDrawing Maze #${lineNumber}"
-            mazeRunner.draw()
+            if (LOG_ENABLED) {
+                println "\nDrawing Maze #${lineNumber}"
+                mazeRunner.draw()
+            }
 
-            println "Solving..."
             def solution = mazeRunner.solve()
-            def solutionString = solution.collect { it.name().toLowerCase()  }.join("','")
-            println ("['" + solutionString + "']")
+            def solutionString = solution.collect { it.name().toLowerCase() }.join("','")
+            println("['" + solutionString + "']")
         }
-
-        println("\nDONE")
     }
 
     MazeRunner(String mazeString, Integer numberOfLives) {
         this.buildMaze(mazeString)
         this.numberOfLives = numberOfLives
         coordinatePriorityQueue = new PriorityQueue<Coordinate>( { Coordinate o1, Coordinate o2 ->
-            int estimatedCost1 = o1.directionsFromStart.size() + o1.manhattanDistanceToEnd(end) + ((o1.value & MINE.val) ? mineCost : 0)
-            int estimatedCost2 = o2.directionsFromStart.size() + o2.manhattanDistanceToEnd(end) + ((o2.value & MINE.val) ? mineCost : 0)
-            return estimatedCost1 < estimatedCost2 ? -1 : estimatedCost1 > estimatedCost2 ? 1 : 0
+            return o1.getCost(mineAversionFactor) <=> o2.getCost(mineAversionFactor)
         })
     }
 
-    void buildMaze(String mazeString) {
+    private void buildMaze(String mazeString) {
         def sizes = mazeString
                 .substring(1, mazeString.indexOf("-") - 1)
                 .split(",")
@@ -70,22 +73,28 @@ class MazeRunner {
 
         // This takes the list of values, splits them by comma, then adds them into the maze data store
         mazeString
-                .substring(mazeString.indexOf("-") + 2, mazeString.length() - 1)
-                .split(",")
-                .eachWithIndex { String entryString, int i ->
-                    def row = i.intdiv(sizes[1])
-                    def col = i % sizes[1]
-                    def entry = entryString.toInteger()
-                    maze[row][col] = entry
-                    if (entry & START.val) {
-                        start = new Coordinate(row: row, col: col, value: entry)
-                    } else if (entry & END.val) {
-                        end = new Coordinate(row: row, col: col, value: entry)
-                    }
+            .substring(mazeString.indexOf("-") + 2, mazeString.length() - 1)
+            .split(",")
+            .eachWithIndex { String entryString, int i ->
+                def row = i.intdiv(sizes[1])
+                def col = i % sizes[1]
+
+                def entry = entryString.toInteger()
+                maze[row][col] = entry
+                if (entry & START.val) {
+                    start = new Coordinate(row: row, col: col, value: entry)
+                } else if (entry & END.val) {
+                    end = new Coordinate(row: row, col: col, value: entry)
                 }
+            }
     }
 
     List<Feature> solve() {
+        // The "aversionFactor" is a value that gives the algorithm a cost to associate with taking a path through a mine;
+        // Too low will give a result that hits too many mines;  Too high means an optimum path can't be guaranteed -
+        // so, we start at 0 increase/decrease until we find the first value that gives us a passing result
+
+        Long lastFailedAversionFactor = 0
         while (true) {
             coordinatePriorityQueue.clear()
             solvedCoordinates.clear()
@@ -93,10 +102,24 @@ class MazeRunner {
 
             def result = executeSearch()
             if (result.mineCount >= numberOfLives) {
-                mineCost += 1
+                // We did not get a valid result - increase mine aversion
+                lastFailedAversionFactor = mineAversionFactor
+                mineAversionFactor = (mineAversionFactor == 0) ? 1 : mineAversionFactor * 2
+                if (LOG_ENABLED) {
+                    println "lastFailedAversionFactor=${lastFailedAversionFactor}; mineAversionFactor increased to ${mineAversionFactor}"
+                }
+            } else if (mineAversionFactor > (lastFailedAversionFactor + 1)) {
+                // We got a result, but it may not be the optimal
+                mineAversionFactor -= (mineAversionFactor - lastFailedAversionFactor) / 2
+                if (LOG_ENABLED) {
+                    println "lastFailedAversionFactor=${lastFailedAversionFactor}; mineAversionFactor decreased to ${mineAversionFactor}"
+                }
             } else {
-                println("Solution found with ${result.mineCount} mines, length is ${result.directionsFromStart.size()}")
-                println("Checked ${solvedCoordinates.size()}/${maze.length * maze[0].length} cells")
+                // Valid, optimal result
+                if (LOG_ENABLED) {
+                    println("Solution found with ${result.mineCount} mines, length is ${result.directionsFromStart.size()}; mineAversionFactor=${mineAversionFactor}")
+                    println("Checked ${solvedCoordinates.size()}/${maze.length * maze[0].length} cells")
+                }
                 return result.directionsFromStart
             }
         }
@@ -104,6 +127,7 @@ class MazeRunner {
 
     private Coordinate executeSearch() {
         while (true) {
+            // Pull next item from queue, process, and check for a win
             def next = coordinatePriorityQueue.poll()
             def result = solveCoordinate(next)
             if (result != null) {
@@ -112,24 +136,28 @@ class MazeRunner {
         }
     }
 
-    Coordinate solveCoordinate(Coordinate coordinate) {
+    private Coordinate solveCoordinate(Coordinate coordinate) {
         if (coordinate == end) {
+            // We've reached the end - return coordinate and meta data
             return coordinate
         } else if (coordinate.value & MINE.val) {
+            // Coordinate is a mine - increase the count
             coordinate.mineCount += 1
         }
 
-        Set<Feature> openDirections = directionOptions().findAll { (coordinate.value & it.val) }
-        openDirections.each {
-            def newCoordinate = it.moveCoordinate(coordinate)
-            newCoordinate.value = maze[newCoordinate.row][newCoordinate.col]
-            newCoordinate.mineCount = coordinate.mineCount
-
-            if (!solvedCoordinates.contains(newCoordinate)) {
-                newCoordinate.directionsFromStart = coordinate.directionsFromStart.collect()
-                newCoordinate.directionsFromStart.add(it)
-                coordinatePriorityQueue.add(newCoordinate)
-            }
+        // For each open side of the cell, add the instantiated coordinate to the queue if it is not already
+        directionOptions()
+            .findAll { (coordinate.value & it.val) }
+            .each {
+                def newCoordinate = it.moveCoordinate(coordinate)
+                if (!solvedCoordinates.contains(newCoordinate)) {
+                    newCoordinate.value = maze[newCoordinate.row][newCoordinate.col]
+                    newCoordinate.mineCount = coordinate.mineCount
+                    newCoordinate.manhattanDistanceToEnd = newCoordinate.manhattanDistance(end)
+                    newCoordinate.directionsFromStart = coordinate.directionsFromStart.collect()
+                    newCoordinate.directionsFromStart.add(it)
+                    coordinatePriorityQueue.add(newCoordinate)
+                }
         }
 
         solvedCoordinates.add(coordinate)
